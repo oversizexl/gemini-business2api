@@ -23,6 +23,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# HTTP错误名称映射
+HTTP_ERROR_NAMES = {
+    400: "参数错误",
+    401: "认证错误",
+    403: "权限错误",
+    429: "限流"
+}
+
 # 配置文件路径 - 自动检测环境
 if os.path.exists("/data"):
     ACCOUNTS_FILE = "/data/accounts.json"  # HF Pro 持久化
@@ -106,10 +114,85 @@ class AccountManager:
         self.jwt_manager: Optional['JWTManager'] = None  # 延迟初始化
         self.is_available = True
         self.last_error_time = 0.0
-        self.last_429_time = 0.0  # 429错误专属时间戳
+        self.last_cooldown_time = 0.0  # 冷却时间戳（401/403/429错误）
         self.error_count = 0
         self.conversation_count = 0  # 累计对话次数（用于统计展示）
         self.session_usage_count = 0  # 本次启动后使用次数（用于均衡轮询）
+
+    def handle_non_http_error(self, error_context: str = "", request_id: str = "") -> None:
+        """
+        统一处理非HTTP错误（网络错误、解析错误等）
+
+        Args:
+            error_context: 错误上下文（如"JWT获取"、"聊天请求"）
+            request_id: 请求ID（用于日志）
+        """
+        req_tag = f"[req_{request_id}] " if request_id else ""
+        self.last_error_time = time.time()
+        self.error_count += 1
+        if self.error_count >= self.account_failure_threshold:
+            self.is_available = False
+            logger.error(
+                f"[ACCOUNT] [{self.config.account_id}] {req_tag}"
+                f"{error_context}连续失败{self.error_count}次，账户已永久禁用"
+            )
+        else:
+            logger.warning(
+                f"[ACCOUNT] [{self.config.account_id}] {req_tag}"
+                f"{error_context}失败({self.error_count}/{self.account_failure_threshold})"
+            )
+
+    def handle_http_error(self, status_code: int, error_detail: str = "", request_id: str = "") -> None:
+        """
+        统一处理HTTP错误（参考 business-gemini-2api-main 的 raise_for_account_response）
+
+        Args:
+            status_code: HTTP状态码
+            error_detail: 错误详情
+            request_id: 请求ID（用于日志）
+
+        处理逻辑：
+            - 400: 参数错误，不计入失败（客户端问题）
+            - 401/403/429: 进入冷却机制，冷却期后自动恢复
+            - 其他HTTP错误: 计入error_count，达到阈值后永久禁用
+        """
+        req_tag = f"[req_{request_id}] " if request_id else ""
+
+        # 400参数错误：不计入失败（客户端问题）
+        if status_code == 400:
+            logger.warning(
+                f"[ACCOUNT] [{self.config.account_id}] {req_tag}"
+                f"HTTP 400参数错误（不计入失败次数）{': ' + error_detail[:100] if error_detail else ''}"
+            )
+            return
+
+        # HTTP认证/限流错误（401/403/429）：临时禁用，冷却后自动恢复
+        if status_code in (401, 403, 429):
+            self.last_cooldown_time = time.time()
+            self.is_available = False
+            error_type = HTTP_ERROR_NAMES.get(status_code, "HTTP错误")
+            logger.warning(
+                f"[ACCOUNT] [{self.config.account_id}] {req_tag}"
+                f"遇到{status_code}{error_type}，账户将休息{self.rate_limit_cooldown_seconds}秒后自动恢复"
+                f"{': ' + error_detail[:100] if error_detail else ''}"
+            )
+        # 其他HTTP错误：计入error_count
+        else:
+            self.last_error_time = time.time()
+            self.error_count += 1
+            if self.error_count >= self.account_failure_threshold:
+                self.is_available = False
+                logger.error(
+                    f"[ACCOUNT] [{self.config.account_id}] {req_tag}"
+                    f"HTTP {status_code}错误连续失败{self.error_count}次，账户已永久禁用"
+                    f"{': ' + error_detail[:100] if error_detail else ''}"
+                )
+            else:
+                logger.warning(
+                    f"[ACCOUNT] [{self.config.account_id}] {req_tag}"
+                    f"HTTP {status_code}错误({self.error_count}/{self.account_failure_threshold})"
+                    f"{': ' + error_detail[:100] if error_detail else ''}"
+                )
 
     async def get_jwt(self, request_id: str = "") -> str:
         """获取 JWT token (带错误处理)"""
@@ -129,32 +212,27 @@ class AccountManager:
             self.error_count = 0
             return jwt
         except Exception as e:
-            self.last_error_time = time.time()
-            self.error_count += 1
-            # 使用配置的失败阈值
-            if self.error_count >= self.account_failure_threshold:
-                self.is_available = False
-                logger.error(f"[ACCOUNT] [{self.config.account_id}] JWT获取连续失败{self.error_count}次，账户已永久禁用")
+            # 使用统一的错误处理入口
+            if isinstance(e, HTTPException):
+                self.handle_http_error(e.status_code, str(e.detail) if hasattr(e, 'detail') else "", request_id)
             else:
-                # 安全：只记录异常类型，不记录详细信息
-                logger.warning(f"[ACCOUNT] [{self.config.account_id}] JWT获取失败({self.error_count}/{self.account_failure_threshold}): {type(e).__name__}")
+                self.handle_non_http_error("JWT获取", request_id)
             raise
 
     def should_retry(self) -> bool:
-        """检查账户是否可重试（429错误冷却期后自动恢复，普通错误永久禁用）"""
+        """检查账户是否可重试（冷却期后自动恢复，普通错误永久禁用）"""
         if self.is_available:
             return True
 
         current_time = time.time()
 
-        # 检查429冷却期（冷却期后自动恢复）
-        if self.last_429_time > 0:
-            if current_time - self.last_429_time > self.rate_limit_cooldown_seconds:
+        # 检查冷却期（401/403/429错误冷却期后自动恢复）
+        if self.last_cooldown_time > 0:
+            if current_time - self.last_cooldown_time > self.rate_limit_cooldown_seconds:
                 # 冷却期已过，自动恢复账户可用性
                 self.is_available = True
-                self.last_429_time = 0.0
-                self.error_count = 0  # 重置错误计数
-                logger.info(f"[ACCOUNT] [{self.config.account_id}] 429冷却期已过，账户已自动恢复")
+                self.last_cooldown_time = 0.0
+                logger.info(f"[ACCOUNT] [{self.config.account_id}] 冷却期已过，账户已自动恢复")
                 return True
             return False  # 仍在冷却期
 
@@ -172,14 +250,14 @@ class AccountManager:
         """
         current_time = time.time()
 
-        # 优先检查429冷却期（无论账户是否可用）
-        if self.last_429_time > 0:
-            remaining_429 = self.rate_limit_cooldown_seconds - (current_time - self.last_429_time)
-            if remaining_429 > 0:
-                return (int(remaining_429), "429限流")
-            # 429冷却期已过
+        # 优先检查冷却期（无论账户是否可用）
+        if self.last_cooldown_time > 0:
+            remaining = self.rate_limit_cooldown_seconds - (current_time - self.last_cooldown_time)
+            if remaining > 0:
+                return (int(remaining), "限流冷却")
+            # 冷却期已过
 
-        # 如果账户可用且没有429冷却，返回正常状态
+        # 如果账户可用且没有冷却，返回正常状态
         if self.is_available:
             return (0, None)
 
@@ -511,7 +589,7 @@ def reload_accounts(
             # 确保错误状态已重置（虽然load_multi_account_config已经初始化，但显式确认）
             account_mgr.is_available = True
             account_mgr.last_error_time = 0.0
-            account_mgr.last_429_time = 0.0
+            account_mgr.last_cooldown_time = 0.0
             account_mgr.error_count = 0
             account_mgr.session_usage_count = 0
             logger.debug(f"[CONFIG] 账户 {account_id} 已刷新，错误状态已重置")

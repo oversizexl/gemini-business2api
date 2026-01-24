@@ -1915,38 +1915,13 @@ async def chat_impl(
                 # 记录账号池状态（请求失败）
                 uptime_tracker.record_request("account_pool", False, status_code=status_code)
 
-                # 根据错误类型决定是否计入error_count
-                # 429限流：临时禁用，冷却后自动恢复
-                if is_http_exception and status_code == 429:
-                    account_manager.last_429_time = time.time()
-                    account_manager.is_available = False  # 临时禁用，冷却期后自动恢复
-                    logger.warning(f"[ACCOUNT] [{account_manager.config.account_id}] [req_{request_id}] 遇到429限流，账户将休息{RATE_LIMIT_COOLDOWN_SECONDS}秒后自动恢复")
-                # 400参数错误：不计入error_count，客户端问题不应封禁账户
-                elif is_http_exception and status_code == 400:
-                    logger.warning(f"[ACCOUNT] [{account_manager.config.account_id}] [req_{request_id}] 参数错误(400)，不计入失败次数: {e.detail}")
-                # 其他错误：计入error_count
+                # 使用统一的错误处理入口
+                if is_http_exception:
+                    account_manager.handle_http_error(status_code, str(e.detail) if hasattr(e, 'detail') else "", request_id)
                 else:
-                    account_manager.last_error_time = time.time()
-                    account_manager.error_count += 1
-                    if account_manager.error_count >= ACCOUNT_FAILURE_THRESHOLD:
-                        account_manager.is_available = False
-                        logger.error(f"[ACCOUNT] [{account_manager.config.account_id}] [req_{request_id}] 请求连续失败{account_manager.error_count}次，账户已永久禁用")
+                    account_manager.handle_non_http_error("聊天请求", request_id)
 
                 retry_count += 1
-
-                # 详细记录错误信息
-                error_type = type(e).__name__
-
-                # 特殊处理HTTPException，提取状态码和详情
-                if is_http_exception:
-                    if status_code == 429:
-                        logger.error(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] 遇到429限流错误，账户将休息{RATE_LIMIT_COOLDOWN_SECONDS}秒")
-                    elif status_code == 400:
-                        logger.error(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] HTTP 400参数错误（不计入失败次数）: {e.detail}")
-                    else:
-                        logger.error(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] HTTP错误 {e.status_code}: {e.detail}")
-                else:
-                    logger.error(f"[CHAT] [{account_manager.config.account_id}] [req_{request_id}] {error_type}: {str(e)[:200]}")
 
                 # 检查是否还能继续重试
                 if retry_count <= max_retries:
