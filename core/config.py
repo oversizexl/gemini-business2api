@@ -44,7 +44,7 @@ def _parse_bool(value, default: bool) -> bool:
 
 class BasicConfig(BaseModel):
     """基础配置"""
-    api_key: str = Field(default="", description="API访问密钥（留空则公开访问）")
+    api_key: str = Field(default="", description="API访问密钥（留空则公开访问，多个密钥用逗号分隔）")
     base_url: str = Field(default="", description="服务器URL（留空则自动检测）")
     proxy_for_auth: str = Field(default="", description="账户操作代理地址（注册/登录/刷新，留空则不使用代理）")
     proxy_for_chat: str = Field(default="", description="对话操作代理地址（JWT/会话/消息，留空则不使用代理）")
@@ -73,9 +73,9 @@ class BasicConfig(BaseModel):
 
 class ImageGenerationConfig(BaseModel):
     """图片生成配置"""
-    enabled: bool = Field(default=True, description="是否启用图片生成")
+    enabled: bool = Field(default=False, description="是否启用图片生成")
     supported_models: List[str] = Field(
-        default=["gemini-3-pro-preview"],
+        default=[],
         description="支持图片生成的模型列表"
     )
     output_format: str = Field(default="base64", description="图片输出格式：base64 或 url")
@@ -95,14 +95,11 @@ class VideoGenerationConfig(BaseModel):
 
 class RetryConfig(BaseModel):
     """重试策略配置"""
-    max_new_session_tries: int = Field(default=5, ge=1, le=20, description="新会话尝试账户数")
-    max_request_retries: int = Field(default=3, ge=1, le=10, description="请求失败重试次数")
     max_account_switch_tries: int = Field(default=5, ge=1, le=20, description="账户切换尝试次数")
-    account_failure_threshold: int = Field(default=3, ge=1, le=10, description="账户失败阈值")
     rate_limit_cooldown_seconds: int = Field(default=7200, ge=3600, le=43200, description="429冷却时间（秒）")
-    text_rate_limit_cooldown_seconds: int = Field(default=7200, ge=3600, le=86400, description="Text 429 cooldown (seconds)")
-    images_rate_limit_cooldown_seconds: int = Field(default=14400, ge=3600, le=86400, description="Images 429 cooldown (seconds)")
-    videos_rate_limit_cooldown_seconds: int = Field(default=14400, ge=3600, le=86400, description="Videos 429 cooldown (seconds)")
+    text_rate_limit_cooldown_seconds: int = Field(default=7200, ge=3600, le=86400, description="对话配额冷却（秒）")
+    images_rate_limit_cooldown_seconds: int = Field(default=14400, ge=3600, le=86400, description="绘图配额冷却（秒）")
+    videos_rate_limit_cooldown_seconds: int = Field(default=14400, ge=3600, le=86400, description="视频配额冷却（秒）")
     session_cache_ttl_seconds: int = Field(default=3600, ge=0, le=86400, description="会话缓存时间（秒，0表示禁用缓存）")
     auto_refresh_accounts_seconds: int = Field(default=60, ge=0, le=600, description="自动刷新账号间隔（秒，0禁用）")
     # 定时刷新配置
@@ -205,8 +202,8 @@ class ConfigManager:
             duckmail_base_url=basic_data.get("duckmail_base_url") or "https://api.duckmail.sbs",
             duckmail_api_key=str(duckmail_api_key_raw or "").strip(),
             duckmail_verify_ssl=_parse_bool(basic_data.get("duckmail_verify_ssl"), True),
-            temp_mail_provider=basic_data.get("temp_mail_provider") or "duckmail",
-            moemail_base_url=basic_data.get("moemail_base_url") or "https://moemail.app",
+            temp_mail_provider=basic_data.get("temp_mail_provider") or "moemail",
+            moemail_base_url=basic_data.get("moemail_base_url") or "https://moemail.nanohajimi.mom",
             moemail_api_key=str(basic_data.get("moemail_api_key") or "").strip(),
             moemail_domain=str(basic_data.get("moemail_domain") or "").strip(),
             freemail_base_url=basic_data.get("freemail_base_url") or "http://your-freemail-server.com",
@@ -439,24 +436,9 @@ class ConfigManager:
         return self._config.session.expire_hours
 
     @property
-    def max_new_session_tries(self) -> int:
-        """新会话尝试账户数"""
-        return self._config.retry.max_new_session_tries
-
-    @property
-    def max_request_retries(self) -> int:
-        """请求失败重试次数"""
-        return self._config.retry.max_request_retries
-
-    @property
     def max_account_switch_tries(self) -> int:
         """账户切换尝试次数"""
         return self._config.retry.max_account_switch_tries
-
-    @property
-    def account_failure_threshold(self) -> int:
-        """账户失败阈值"""
-        return self._config.retry.account_failure_threshold
 
     @property
     def rate_limit_cooldown_seconds(self) -> int:

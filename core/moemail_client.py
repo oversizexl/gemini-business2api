@@ -24,7 +24,7 @@ class MoemailClient:
 
     def __init__(
         self,
-        base_url: str = "https://moemail.app",
+        base_url: str = "https://moemail.nanohajimi.mom",
         proxy: str = "",
         api_key: str = "",
         domain: str = "",
@@ -268,11 +268,9 @@ class MoemailClient:
                     msg_time = _parse_message_time(msg)
                     if msg_time:
                         if msg_time < since_time:
-                            self._log("info", f"⏭️ 邮件 {idx} 时间过早，跳过")
                             continue
 
                     if not _looks_like_verification(msg):
-                        self._log("info", f"⏭️ 邮件 {idx} 主题非验证码邮件，跳过")
                         continue
 
                 # 优先从邮件列表的 content 字段提取验证码（更高效）
