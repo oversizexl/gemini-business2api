@@ -99,12 +99,15 @@
             <div class="rounded-2xl border border-border bg-card p-4">
               <p class="text-xs uppercase tracking-[0.3em] text-muted-foreground">自动注册/刷新</p>
               <div class="mt-4 space-y-3">
-                <div class="flex items-center justify-between gap-2">
-                  <Checkbox v-model="localSettings.basic.browser_headless">
-                    无头浏览器
-                  </Checkbox>
-                  <HelpTip text="无头模式适用于服务器环境（如 Docker）。若注册/刷新失败，建议关闭。" />
+                <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                  <span>浏览器模式</span>
+                  <HelpTip text="normal=正常窗口；silent=静默最小化（有头但尽量不抢焦点）；headless=无头。" />
                 </div>
+                <SelectMenu
+                  v-model="localSettings.basic.browser_mode"
+                  :options="browserModeOptions"
+                  class="w-full"
+                />
                 <div class="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>浏览器引擎</span>
                   <HelpTip text="UC: 支持无头/有头，但可能失败。DP: 支持无头/有头，更稳定，推荐使用。" />
@@ -166,7 +169,7 @@
                     v-model="localSettings.basic.moemail_base_url"
                     type="text"
                     class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
-                    placeholder="https://moemail.nanohajimi.mom"
+                    placeholder="https://moemail.app"
                   />
                   <label class="block text-xs text-muted-foreground">Moemail API 密钥</label>
                   <input
@@ -234,6 +237,34 @@
                   <label class="block text-xs text-muted-foreground">GPTMail 邮箱域名（可选，不带@）</label>
                   <input
                     v-model="localSettings.basic.gptmail_domain"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="留空则随机选择"
+                  />
+                </template>
+
+                <!-- Cloudflare Mail 配置 -->
+                <template v-if="localSettings.basic.temp_mail_provider === 'cfmail'">
+                  <Checkbox v-model="localSettings.basic.cfmail_verify_ssl">
+                    Cloudflare Mail SSL 校验
+                  </Checkbox>
+                  <label class="block text-xs text-muted-foreground">Cloudflare Mail API 地址</label>
+                  <input
+                    v-model="localSettings.basic.cfmail_base_url"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="https://your-cfmail-instance.example.com"
+                  />
+                  <label class="block text-xs text-muted-foreground">访问密码（x-custom-auth，无密码留空）</label>
+                  <input
+                    v-model="localSettings.basic.cfmail_api_key"
+                    type="text"
+                    class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
+                    placeholder="留空则不使用密码"
+                  />
+                  <label class="block text-xs text-muted-foreground">邮箱域名（可选，不带@）</label>
+                  <input
+                    v-model="localSettings.basic.cfmail_domain"
                     type="text"
                     class="w-full rounded-2xl border border-input bg-background px-3 py-2 text-sm"
                     placeholder="留空则随机选择"
@@ -435,6 +466,11 @@ const videosRateLimitCooldownHours = createCooldownHours(
 const browserEngineOptions = [
   { label: 'DP - 支持无头/有头', value: 'dp' },
 ]
+const browserModeOptions = [
+  { label: 'normal - 正常窗口', value: 'normal' },
+  { label: 'silent - 静默最小化', value: 'silent' },
+  { label: 'headless - 无头', value: 'headless' },
+]
 const tempMailProviderOptions = mailProviderOptions
 const imageOutputOptions = [
   { label: 'Base64 编码', value: 'base64' },
@@ -476,7 +512,12 @@ watch(settings, (value) => {
   next.basic.duckmail_base_url ||= 'https://api.duckmail.sbs'
   next.basic.duckmail_verify_ssl = next.basic.duckmail_verify_ssl ?? true
   next.basic.browser_engine = next.basic.browser_engine || 'dp'
-  next.basic.browser_headless = next.basic.browser_headless ?? false
+  const normalizedBrowserMode =
+    next.basic.browser_mode === 'normal' || next.basic.browser_mode === 'silent' || next.basic.browser_mode === 'headless'
+      ? next.basic.browser_mode
+      : ((next.basic.browser_headless ?? false) ? 'headless' : 'normal')
+  next.basic.browser_mode = normalizedBrowserMode
+  next.basic.browser_headless = normalizedBrowserMode === 'headless'
   next.basic.refresh_window_hours = Number.isFinite(next.basic.refresh_window_hours)
     ? next.basic.refresh_window_hours
     : 1
@@ -490,7 +531,7 @@ watch(settings, (value) => {
     ? next.basic.duckmail_api_key
     : ''
   next.basic.temp_mail_provider = next.basic.temp_mail_provider || defaultMailProvider
-  next.basic.moemail_base_url = next.basic.moemail_base_url || 'https://moemail.nanohajimi.mom'
+  next.basic.moemail_base_url = next.basic.moemail_base_url || 'https://moemail.app'
   next.basic.moemail_api_key = typeof next.basic.moemail_api_key === 'string'
     ? next.basic.moemail_api_key
     : ''
@@ -513,6 +554,16 @@ watch(settings, (value) => {
   next.basic.gptmail_verify_ssl = next.basic.gptmail_verify_ssl ?? true
   next.basic.gptmail_domain = typeof next.basic.gptmail_domain === 'string'
     ? next.basic.gptmail_domain
+    : ''
+  next.basic.cfmail_base_url = typeof next.basic.cfmail_base_url === 'string'
+    ? next.basic.cfmail_base_url
+    : ''
+  next.basic.cfmail_api_key = typeof next.basic.cfmail_api_key === 'string'
+    ? next.basic.cfmail_api_key
+    : ''
+  next.basic.cfmail_verify_ssl = next.basic.cfmail_verify_ssl ?? true
+  next.basic.cfmail_domain = typeof next.basic.cfmail_domain === 'string'
+    ? next.basic.cfmail_domain
     : ''
   next.retry = next.retry || {}
   next.retry.auto_refresh_accounts_seconds = Number.isFinite(next.retry.auto_refresh_accounts_seconds)
@@ -542,6 +593,13 @@ const handleSave = async () => {
   isSaving.value = true
 
   try {
+    localSettings.value.basic.browser_mode =
+      localSettings.value.basic.browser_mode === 'normal' ||
+      localSettings.value.basic.browser_mode === 'silent' ||
+      localSettings.value.basic.browser_mode === 'headless'
+        ? localSettings.value.basic.browser_mode
+        : 'normal'
+    localSettings.value.basic.browser_headless = localSettings.value.basic.browser_mode === 'headless'
     await settingsStore.updateSettings(localSettings.value)
     toast.success('设置保存成功')
   } catch (error: any) {
